@@ -4,8 +4,6 @@ from pyspark.sql.types import *
 from snowflake.helper import sfOptions
 import os
 
-os.environ['HADOOP_HOME'] = "C:\hadoop-3.3.0"
-
 def transform_and_output_to_hdfs():
     # Create a SparkSession with Hive support
     spark = SparkSession.builder \
@@ -15,17 +13,32 @@ def transform_and_output_to_hdfs():
                 'net.snowflake:snowflake-jdbc:3.13.23,net.snowflake:spark-snowflake_2.12:2.11.0-spark_3.3')\
         .getOrCreate()
 
-
+    raw_path = "hdfs://localhost:9000/rawlayer"
+    output_path = "hdfs://localhost:9000/rawlayer_output"
 
     # Read multiple JSON files into a DataFrame
-    df = spark.read.option("multiline","true").json(r"C:\Users\sunil.kn\Downloads\j\AdventureWorksCustomers-210509-235702.json")
+    df = spark.read.json(raw_path+"/*.json")
 
     df.show()
-    # Output the transformed DataFrame to HDFS in JSON format
-    output_path = "hdfs://localhost:9000/rawlayer"
-    df.write.mode("overwrite").json(output_path)
-    df.write.format("snowflake").options(**sfOptions) \
+
+    transformed_df = df.fillna({"EmailAddress": ""}) \
+        .fillna({"EducationLevel": ""})\
+        .withColumn("TotalChildren", col("TotalChildren").cast(IntegerType())) \
+        .withColumn("FullName", concat(col("Prefix"), lit(" "), col("FirstName"), lit(" "), col("LastName"))) \
+        .withColumn("IncomeCategory",
+                    when(col("AnnualIncome") < 50000, "Low")
+                    .when(col("AnnualIncome") < 100000, "Medium")
+                    .otherwise("High"))
+
+    # Overwrite the original input path with the transformed DataFrame
+    transformed_df.coalesce(1).write.mode("overwrite").json(output_path)
+
+    # output to snowflake
+    transformed_df.coalesce(1).write.format("snowflake").options(**sfOptions) \
         .option("dbtable", "{}".format(r"raw_layer")).mode("overwrite").options(header=True).save()
+
+    # Save the DataFrame to Hive table
+    transformed_df.coalesce(1).write.mode("overwrite").saveAsTable("raw_layer")
 
     # Stop the SparkSession
     spark.stop()
